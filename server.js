@@ -53,7 +53,7 @@ app.use("/static", express.static("/usr/share/novnc"));
 
 // WebSocket + HTTP proxy to websockify:6080
 const proxy = createProxyMiddleware({
-  target: "http://localhost:6080",
+  target: "http://127.0.0.1:6080",
   changeOrigin: true,
   ws: true,
   pathRewrite: { "^/proxy": "" },

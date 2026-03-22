@@ -7,11 +7,6 @@ const PORT = process.env.PORT || 3000;
 
 function setup() {
   console.log("Setting up...");
-
-  try {
-    execSync("apt-get update -qq && apt-get install -y -qq xvfb x11vnc novnc websockify chromium", { stdio: "inherit" });
-  } catch (e) { console.log("apt:", e.message); }
-
   try { execSync("pkill Xvfb; pkill x11vnc; pkill websockify", { shell: true, stdio: "ignore" }); } catch(e) {}
 
   // Xvfb

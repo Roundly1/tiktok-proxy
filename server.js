@@ -2,7 +2,7 @@ const { execSync } = require("child_process");
 try {
   execSync("npx playwright install chromium", { stdio: "inherit" });
 } catch (e) {
-  console.log("Playwright install error:", e.message);
+  console.log("Playwright install:", e.message);
 }
 
 const express = require("express");
@@ -14,270 +14,219 @@ app.use(cors());
 app.use(express.json());
 
 let browser = null;
-let page = null;
+let context = null;
 
-async function getBrowser() {
+async function getContext() {
   if (!browser) {
     browser = await chromium.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
-      ],
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
   }
-  return browser;
-}
-
-async function getPage() {
-  if (!page) {
-    const b = await getBrowser();
-    const context = await b.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      viewport: { width: 1280, height: 800 },
+  if (!context) {
+    context = await browser.newContext({
+      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+      viewport: { width: 390, height: 844 },
     });
-    page = await context.newPage();
   }
-  return page;
+  return context;
 }
 
-// Asosiy sahifa - frontend
+// TikTok For You page dan videolarni olish
+app.get("/videos", async (req, res) => {
+  try {
+    const ctx = await getContext();
+    const page = await ctx.newPage();
+
+    const videos = [];
+
+    // TikTok API intercepting
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (url.includes("api/recommend/item_list") || url.includes("api/feed")) {
+        try {
+          const json = await response.json();
+          const items = json.itemList || json.items || [];
+          for (const item of items) {
+            if (item.video && item.video.playAddr) {
+              videos.push({
+                id: item.id,
+                desc: item.desc || "",
+                author: item.author?.nickname || item.author?.uniqueId || "unknown",
+                avatar: item.author?.avatarThumb || "",
+                playUrl: item.video.playAddr,
+                cover: item.video.cover || item.video.originCover || "",
+                likes: item.stats?.diggCount || 0,
+                comments: item.stats?.commentCount || 0,
+              });
+            }
+          }
+        } catch (e) {}
+      }
+    });
+
+    await page.goto("https://www.tiktok.com/foryou", {
+      waitUntil: "networkidle",
+      timeout: 30000,
+    });
+
+    await page.waitForTimeout(3000);
+    await page.close();
+
+    if (videos.length === 0) {
+      return res.json({ videos: [], message: "Video topilmadi, qayta urining" });
+    }
+
+    res.json({ videos });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Video proxy — CORS muammosiz video oqimi
+app.get("/proxy-video", async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ error: "URL kerak" });
+
+    const ctx = await getContext();
+    const page = await ctx.newPage();
+
+    const response = await page.request.get(decodeURIComponent(url), {
+      headers: {
+        "Referer": "https://www.tiktok.com/",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
+      },
+    });
+
+    const body = await response.body();
+    const contentType = response.headers()["content-type"] || "video/mp4";
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.send(body);
+    await page.close();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Frontend
 app.get("/", (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="uz">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>TikTok Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <title>TikTok</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{background:#000;color:#fff;font-family:sans-serif;display:flex;flex-direction:column;height:100vh;overflow:hidden}
-    #toolbar{background:#111;padding:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-    button{background:#fe2c55;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px}
-    button:hover{background:#d4002f}
-    button:disabled{background:#555;cursor:not-allowed}
-    #url-bar{flex:1;min-width:120px;background:#222;border:1px solid #444;color:#fff;padding:6px 10px;border-radius:6px;font-size:12px}
-    #screen-wrap{flex:1;position:relative;overflow:hidden;cursor:crosshair;background:#111}
-    #screen{width:100%;height:100%;object-fit:contain;display:block}
-    #loading{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:16px;color:#888;text-align:center}
-    #type-bar{background:#111;padding:6px;display:flex;gap:6px}
-    #type-input{flex:1;background:#222;border:1px solid #444;color:#fff;padding:6px 10px;border-radius:6px;font-size:13px}
-    #status{font-size:11px;color:#888;padding:2px 8px;background:#111;text-align:center}
+    body{background:#000;color:#fff;font-family:sans-serif;overflow:hidden;height:100vh}
+    #feed{height:100vh;overflow-y:scroll;scroll-snap-type:y mandatory;scrollbar-width:none}
+    #feed::-webkit-scrollbar{display:none}
+    .video-item{height:100vh;scroll-snap-align:start;position:relative;display:flex;align-items:center;justify-content:center;background:#000}
+    video{width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0}
+    .info{position:absolute;bottom:80px;left:12px;right:60px;z-index:10}
+    .author{font-weight:700;font-size:15px;margin-bottom:6px}
+    .desc{font-size:13px;color:#eee;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .actions{position:absolute;right:10px;bottom:80px;display:flex;flex-direction:column;gap:16px;align-items:center;z-index:10}
+    .action-btn{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
+    .action-btn span:first-child{font-size:26px}
+    .action-btn span:last-child{font-size:11px;color:#eee}
+    #loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;z-index:100}
+    .spinner{width:40px;height:40px;border:3px solid #333;border-top:3px solid #fe2c55;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    #error-msg{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fe2c55;padding:16px 24px;border-radius:12px;text-align:center;z-index:100;display:none}
   </style>
 </head>
 <body>
-<div id="toolbar">
-  <button onclick="openTiktok()" id="btn-open">🎵 TikTok</button>
-  <button onclick="refresh()">🔄</button>
-  <button onclick="scrollUp()">⬆️</button>
-  <button onclick="scrollDown()">⬇️</button>
-  <button onclick="goBack()">◀️</button>
-  <input id="url-bar" readonly placeholder="URL..."/>
+<div id="loading">
+  <div class="spinner"></div>
+  <p>TikTok yuklanmoqda...</p>
 </div>
-<div id="screen-wrap">
-  <img id="screen" src="" alt=""/>
-  <div id="loading">▶️ TikTok tugmasini bosing</div>
-</div>
-<div id="type-bar">
-  <input id="type-input" placeholder="Matn yozing (Enter = yuborish)..."/>
-  <button onclick="sendText()">⌨️</button>
-</div>
-<div id="status">Tayyor</div>
+<div id="error-msg"></div>
+<div id="feed"></div>
 
 <script>
-  const img = document.getElementById("screen");
+  const feed = document.getElementById("feed");
   const loading = document.getElementById("loading");
-  const urlBar = document.getElementById("url-bar");
-  const status = document.getElementById("status");
+  const errorMsg = document.getElementById("error-msg");
 
-  function setStatus(msg){ status.textContent = msg; }
+  async function loadVideos() {
+    try {
+      const r = await fetch("/videos");
+      const data = await r.json();
 
-  async function takeScreenshot(){
-    img.src = "/screenshot?" + Date.now();
-    return new Promise(res => { img.onload = res; img.onerror = res; });
+      loading.style.display = "none";
+
+      if (!data.videos || data.videos.length === 0) {
+        showError("Video topilmadi. Qayta yuklang.");
+        return;
+      }
+
+      data.videos.forEach(v => addVideo(v));
+    } catch(e) {
+      loading.style.display = "none";
+      showError("Xato yuz berdi: " + e.message);
+    }
   }
 
-  async function updateUrl(){
-    try{
-      const r = await fetch("/url");
-      const d = await r.json();
-      urlBar.value = d.url;
-    }catch(e){}
+  function addVideo(v) {
+    const div = document.createElement("div");
+    div.className = "video-item";
+
+    const videoUrl = "/proxy-video?url=" + encodeURIComponent(v.playUrl);
+
+    div.innerHTML = \`
+      <video src="\${videoUrl}" loop playsinline preload="none" poster="\${v.cover}"></video>
+      <div class="info">
+        <div class="author">@\${v.author}</div>
+        <div class="desc">\${v.desc}</div>
+      </div>
+      <div class="actions">
+        <div class="action-btn"><span>❤️</span><span>\${fmt(v.likes)}</span></div>
+        <div class="action-btn"><span>💬</span><span>\${fmt(v.comments)}</span></div>
+        <div class="action-btn"><span>↗️</span><span>Share</span></div>
+      </div>
+    \`;
+
+    feed.appendChild(div);
   }
 
-  async function openTiktok(){
-    loading.style.display = "block";
-    loading.textContent = "TikTok ochilmoqda...";
-    setStatus("Yuklanmoqda...");
-    await fetch("/open-tiktok");
-    await takeScreenshot();
-    await updateUrl();
-    loading.style.display = "none";
-    setStatus("Tayyor");
+  function fmt(n) {
+    if (n >= 1000000) return (n/1000000).toFixed(1) + "M";
+    if (n >= 1000) return (n/1000).toFixed(1) + "K";
+    return n || 0;
   }
 
-  async function refresh(){
-    setStatus("Yangilanmoqda...");
-    await takeScreenshot();
-    await updateUrl();
-    setStatus("Tayyor");
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    errorMsg.style.display = "block";
+    setTimeout(() => errorMsg.style.display = "none", 4000);
   }
 
-  async function scrollDown(){
-    setStatus("Scroll...");
-    const r = await fetch("/scroll", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({deltaY:700})});
-    const blob = await r.blob();
-    img.src = URL.createObjectURL(blob);
-    setStatus("Tayyor");
-  }
+  // Auto play visible video
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      const video = e.target.querySelector("video");
+      if (!video) return;
+      if (e.isIntersecting) {
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
+    });
+  }, { threshold: 0.7 });
 
-  async function scrollUp(){
-    setStatus("Scroll...");
-    const r = await fetch("/scroll", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({deltaY:-700})});
-    const blob = await r.blob();
-    img.src = URL.createObjectURL(blob);
-    setStatus("Tayyor");
-  }
-
-  async function goBack(){
-    setStatus("Orqaga...");
-    await fetch("/back");
-    await takeScreenshot();
-    await updateUrl();
-    setStatus("Tayyor");
-  }
-
-  document.getElementById("screen-wrap").addEventListener("click", async (e)=>{
-    const wrap = e.currentTarget;
-    const rect = wrap.getBoundingClientRect();
-    const scaleX = 1280 / rect.width;
-    const scaleY = 800 / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top) * scaleY;
-    setStatus("Klik: " + Math.round(x) + ", " + Math.round(y));
-    const r = await fetch("/click", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({x,y})});
-    const blob = await r.blob();
-    img.src = URL.createObjectURL(blob);
-    await updateUrl();
-    setStatus("Tayyor");
+  const mo = new MutationObserver(() => {
+    document.querySelectorAll(".video-item").forEach(el => observer.observe(el));
   });
+  mo.observe(feed, { childList: true });
 
-  async function sendText(){
-    const input = document.getElementById("type-input");
-    const text = input.value.trim();
-    if(!text) return;
-    input.value = "";
-    setStatus("Yozilmoqda...");
-    await fetch("/type", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
-    await takeScreenshot();
-    setStatus("Tayyor");
-  }
-
-  document.getElementById("type-input").addEventListener("keydown", e=>{
-    if(e.key === "Enter") sendText();
-  });
+  loadVideos();
 </script>
 </body>
 </html>`);
-});
-
-// Screenshot
-app.get("/screenshot", async (req, res) => {
-  try {
-    const p = await getPage();
-    const screenshot = await p.screenshot({ type: "jpeg", quality: 80 });
-    res.setHeader("Content-Type", "image/jpeg");
-    res.send(screenshot);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// TikTok ochish
-app.get("/open-tiktok", async (req, res) => {
-  try {
-    const p = await getPage();
-    await p.goto("https://www.tiktok.com", {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-    await p.waitForTimeout(3000);
-    const screenshot = await p.screenshot({ type: "jpeg", quality: 80 });
-    res.setHeader("Content-Type", "image/jpeg");
-    res.send(screenshot);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Click
-app.post("/click", async (req, res) => {
-  try {
-    const { x, y } = req.body;
-    const p = await getPage();
-    await p.mouse.click(x, y);
-    await p.waitForTimeout(1500);
-    const screenshot = await p.screenshot({ type: "jpeg", quality: 80 });
-    res.setHeader("Content-Type", "image/jpeg");
-    res.send(screenshot);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Type
-app.post("/type", async (req, res) => {
-  try {
-    const { text } = req.body;
-    const p = await getPage();
-    await p.keyboard.type(text);
-    await p.waitForTimeout(500);
-    const screenshot = await p.screenshot({ type: "jpeg", quality: 80 });
-    res.setHeader("Content-Type", "image/jpeg");
-    res.send(screenshot);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Scroll
-app.post("/scroll", async (req, res) => {
-  try {
-    const { deltaY } = req.body;
-    const p = await getPage();
-    await p.mouse.wheel(0, deltaY);
-    await p.waitForTimeout(800);
-    const screenshot = await p.screenshot({ type: "jpeg", quality: 80 });
-    res.setHeader("Content-Type", "image/jpeg");
-    res.send(screenshot);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Orqaga
-app.get("/back", async (req, res) => {
-  try {
-    const p = await getPage();
-    await p.goBack();
-    await p.waitForTimeout(1000);
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// URL
-app.get("/url", async (req, res) => {
-  try {
-    const p = await getPage();
-    res.json({ url: p.url() });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 const PORT = process.env.PORT || 3000;

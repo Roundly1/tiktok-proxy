@@ -1,3 +1,10 @@
+const { execSync } = require("child_process");
+try {
+  execSync("npx playwright install chromium", { stdio: "inherit" });
+} catch (e) {
+  console.log("Playwright install error:", e.message);
+}
+
 const express = require("express");
 const { chromium } = require("playwright");
 const cors = require("cors");

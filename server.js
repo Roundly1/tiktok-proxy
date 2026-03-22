@@ -21,7 +21,12 @@ function setup() {
       "-nopw", "-listen", "localhost",
       "-forever", "-shared",
       "-noxdamage", "-noscr", "-nowf",
-      "-threads"
+      "-threads",
+      "-wait", "5",
+      "-defer", "5",
+      "-speeds", "lan",
+      "-ncache", "10",
+      "-ncache_cr",
     ], { stdio: "ignore", detached: true }).unref();
     console.log("x11vnc started");
 
@@ -84,6 +89,8 @@ app.get("/", (req, res) => {
       const rfb = new RFB(wrap, wsUrl, { scaleViewport: true, resizeSession: true });
       rfb.scaleViewport = true;
       rfb.resizeSession = true;
+      rfb.qualityLevel = 9;
+      rfb.compressionLevel = 0;
       rfb.addEventListener("connect", () => { status.style.display = "none"; });
       rfb.addEventListener("disconnect", () => {
         status.style.display = "block";

@@ -202,9 +202,12 @@ app.get("/open-tiktok", async (req, res) => {
     const p = await getPage();
     await p.goto("https://www.tiktok.com", {
       waitUntil: "domcontentloaded",
-      timeout: 30000,
+      timeout: 60000,
     });
-    res.json({ success: true });
+    await p.waitForTimeout(3000);
+    const screenshot = await p.screenshot({ type: "jpeg", quality: 80 });
+    res.setHeader("Content-Type", "image/jpeg");
+    res.send(screenshot);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

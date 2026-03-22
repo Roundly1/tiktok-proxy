@@ -11,7 +11,7 @@ function setup() {
   try { execSync("pkill Xvfb; pkill x11vnc; pkill chromium", { shell: true, stdio: "ignore" }); } catch(e) {}
 
   // Xvfb
-  spawn("Xvfb", [":99", "-screen", "0", "1280x800x24", "+extension", "GLX"], { stdio: "ignore", detached: true }).unref();
+  spawn("Xvfb", [":99", "-screen", "0", "390x844x24", "+extension", "GLX"], { stdio: "ignore", detached: true }).unref();
   console.log("Xvfb started");
 
   setTimeout(() => {
@@ -41,7 +41,7 @@ function setup() {
         "--no-default-browser-check",
         "--disable-default-apps",
         "--autoplay-policy=no-user-gesture-required",
-        "--window-size=1280,800",
+        "--window-size=390,844",
         "--window-position=0,0",
         "https://www.tiktok.com"
       ], {

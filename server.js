@@ -98,7 +98,7 @@ app.get("/", (req, res) => {
       const host = window.location.hostname;
       const port = window.location.port || "443";
       const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const url = "/vnc/vnc.html?host=" + host + "&port=" + port + "&path=websockify&autoconnect=1&resize=scale&show_dot=1&reconnect=1";
+      const url = "/vnc/vnc.html?path=websockify&autoconnect=1&resize=scale&reconnect=1&reconnect_delay=2000";
       document.getElementById("vnc-frame").src = url;
     }
 

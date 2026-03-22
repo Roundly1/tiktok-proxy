@@ -1,1 +1,9 @@
-
+services:
+  - type: web
+    name: tiktok-proxy
+    runtime: node
+    buildCommand: npm install && npx playwright install chromium && npx playwright install-deps chromium
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -14,98 +14,112 @@ app.use(cors());
 app.use(express.json());
 
 let browser = null;
-let context = null;
 
-async function getContext() {
+async function getBrowser() {
   if (!browser) {
     browser = await chromium.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
     });
   }
-  if (!context) {
-    context = await browser.newContext({
-      userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-      viewport: { width: 390, height: 844 },
-    });
-  }
-  return context;
+  return browser;
 }
 
-// TikTok For You page dan videolarni olish
+// TikTok scraping — video URLlarini olish
 app.get("/videos", async (req, res) => {
-  try {
-    const ctx = await getContext();
-    const page = await ctx.newPage();
+  const b = await getBrowser();
+  const context = await b.newContext({
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    viewport: { width: 390, height: 844 },
+  });
+  const page = await context.newPage();
 
-    const videos = [];
+  const videoData = [];
 
-    // TikTok API intercepting
-    page.on("response", async (response) => {
-      const url = response.url();
-      if (url.includes("api/recommend/item_list") || url.includes("api/feed")) {
-        try {
-          const json = await response.json();
-          const items = json.itemList || json.items || [];
-          for (const item of items) {
-            if (item.video && item.video.playAddr) {
-              videos.push({
-                id: item.id,
-                desc: item.desc || "",
-                author: item.author?.nickname || item.author?.uniqueId || "unknown",
-                avatar: item.author?.avatarThumb || "",
-                playUrl: item.video.playAddr,
-                cover: item.video.cover || item.video.originCover || "",
-                likes: item.stats?.diggCount || 0,
-                comments: item.stats?.commentCount || 0,
-              });
-            }
-          }
-        } catch (e) {}
-      }
-    });
-
-    await page.goto("https://www.tiktok.com/foryou", {
-      waitUntil: "networkidle",
-      timeout: 30000,
-    });
-
-    await page.waitForTimeout(3000);
-    await page.close();
-
-    if (videos.length === 0) {
-      return res.json({ videos: [], message: "Video topilmadi, qayta urining" });
+  // Network requestlarni kuzatish
+  page.on("response", async (response) => {
+    const url = response.url();
+    if (
+      url.includes("item_list") ||
+      url.includes("aweme/v1") ||
+      url.includes("feed?") ||
+      url.includes("recommend")
+    ) {
+      try {
+        const text = await response.text();
+        const json = JSON.parse(text);
+        const items = json.aweme_list || json.itemList || json.items || [];
+        for (const item of items) {
+          try {
+            const vid = item.video;
+            if (!vid) continue;
+            const playUrl =
+              vid.play_addr?.url_list?.[0] ||
+              vid.download_addr?.url_list?.[0] ||
+              vid.playAddr ||
+              null;
+            if (!playUrl) continue;
+            videoData.push({
+              id: item.aweme_id || item.id || Math.random(),
+              desc: item.desc || item.description || "",
+              author: item.author?.nickname || item.author?.unique_id || "user",
+              cover: vid.cover?.url_list?.[0] || vid.cover || "",
+              playUrl,
+              likes: item.statistics?.digg_count || item.stats?.diggCount || 0,
+              comments: item.statistics?.comment_count || item.stats?.commentCount || 0,
+            });
+          } catch (e) {}
+        }
+      } catch (e) {}
     }
+  });
 
-    res.json({ videos });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  try {
+    await page.goto("https://www.tiktok.com/", {
+      waitUntil: "networkidle",
+      timeout: 40000,
+    });
+    await page.waitForTimeout(5000);
+
+    // Scroll qilish — ko'proq video yuklash uchun
+    await page.evaluate(() => window.scrollBy(0, 500));
+    await page.waitForTimeout(2000);
+  } catch (e) {
+    console.log("Goto error:", e.message);
   }
+
+  await page.close();
+  await context.close();
+
+  console.log("Topilgan videolar:", videoData.length);
+  res.json({ videos: videoData });
 });
 
-// Video proxy — CORS muammosiz video oqimi
+// Video proxy
 app.get("/proxy-video", async (req, res) => {
   try {
     const { url } = req.query;
     if (!url) return res.status(400).json({ error: "URL kerak" });
 
-    const ctx = await getContext();
-    const page = await ctx.newPage();
+    const b = await getBrowser();
+    const context = await b.newContext();
+    const page = await context.newPage();
 
     const response = await page.request.get(decodeURIComponent(url), {
       headers: {
-        "Referer": "https://www.tiktok.com/",
+        Referer: "https://www.tiktok.com/",
         "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)",
       },
     });
 
     const body = await response.body();
-    const contentType = response.headers()["content-type"] || "video/mp4";
-
-    res.setHeader("Content-Type", contentType);
+    const ct = response.headers()["content-type"] || "video/mp4";
+    res.setHeader("Content-Type", ct);
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.send(body);
+
     await page.close();
+    await context.close();
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -126,57 +140,63 @@ app.get("/", (req, res) => {
     #feed::-webkit-scrollbar{display:none}
     .video-item{height:100vh;scroll-snap-align:start;position:relative;display:flex;align-items:center;justify-content:center;background:#000}
     video{width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0}
-    .info{position:absolute;bottom:80px;left:12px;right:60px;z-index:10}
+    .info{position:absolute;bottom:80px;left:12px;right:60px;z-index:10;text-shadow:0 1px 3px rgba(0,0,0,0.8)}
     .author{font-weight:700;font-size:15px;margin-bottom:6px}
-    .desc{font-size:13px;color:#eee;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+    .desc{font-size:13px;color:#eee;line-height:1.4}
     .actions{position:absolute;right:10px;bottom:80px;display:flex;flex-direction:column;gap:16px;align-items:center;z-index:10}
     .action-btn{display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer}
-    .action-btn span:first-child{font-size:26px}
-    .action-btn span:last-child{font-size:11px;color:#eee}
-    #loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;z-index:100}
-    .spinner{width:40px;height:40px;border:3px solid #333;border-top:3px solid #fe2c55;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px}
+    .action-btn span:first-child{font-size:28px}
+    .action-btn span:last-child{font-size:11px}
+    #loading{position:fixed;inset:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100}
+    .spinner{width:48px;height:48px;border:3px solid #333;border-top:3px solid #fe2c55;border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px}
     @keyframes spin{to{transform:rotate(360deg)}}
-    #error-msg{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fe2c55;padding:16px 24px;border-radius:12px;text-align:center;z-index:100;display:none}
+    #retry-btn{margin-top:16px;background:#fe2c55;border:none;color:#fff;padding:10px 24px;border-radius:8px;font-size:15px;cursor:pointer;display:none}
   </style>
 </head>
 <body>
 <div id="loading">
   <div class="spinner"></div>
-  <p>TikTok yuklanmoqda...</p>
+  <p id="load-text">TikTok yuklanmoqda... (20-30 sek)</p>
+  <button id="retry-btn" onclick="loadVideos()">🔄 Qayta urish</button>
 </div>
-<div id="error-msg"></div>
 <div id="feed"></div>
 
 <script>
   const feed = document.getElementById("feed");
   const loading = document.getElementById("loading");
-  const errorMsg = document.getElementById("error-msg");
+  const loadText = document.getElementById("load-text");
+  const retryBtn = document.getElementById("retry-btn");
 
   async function loadVideos() {
+    loading.style.display = "flex";
+    retryBtn.style.display = "none";
+    loadText.textContent = "TikTok yuklanmoqda... (20-30 sek)";
+    feed.innerHTML = "";
+
     try {
       const r = await fetch("/videos");
       const data = await r.json();
-
       loading.style.display = "none";
 
       if (!data.videos || data.videos.length === 0) {
-        showError("Video topilmadi. Qayta yuklang.");
+        loadText.textContent = "Video topilmadi 😞";
+        retryBtn.style.display = "block";
+        loading.style.display = "flex";
         return;
       }
 
       data.videos.forEach(v => addVideo(v));
     } catch(e) {
-      loading.style.display = "none";
-      showError("Xato yuz berdi: " + e.message);
+      loadText.textContent = "Xato: " + e.message;
+      retryBtn.style.display = "block";
+      loading.style.display = "flex";
     }
   }
 
   function addVideo(v) {
     const div = document.createElement("div");
     div.className = "video-item";
-
     const videoUrl = "/proxy-video?url=" + encodeURIComponent(v.playUrl);
-
     div.innerHTML = \`
       <video src="\${videoUrl}" loop playsinline preload="none" poster="\${v.cover}"></video>
       <div class="info">
@@ -189,39 +209,28 @@ app.get("/", (req, res) => {
         <div class="action-btn"><span>↗️</span><span>Share</span></div>
       </div>
     \`;
-
     feed.appendChild(div);
   }
 
   function fmt(n) {
+    if (!n) return "0";
     if (n >= 1000000) return (n/1000000).toFixed(1) + "M";
     if (n >= 1000) return (n/1000).toFixed(1) + "K";
-    return n || 0;
+    return String(n);
   }
 
-  function showError(msg) {
-    errorMsg.textContent = msg;
-    errorMsg.style.display = "block";
-    setTimeout(() => errorMsg.style.display = "none", 4000);
-  }
-
-  // Auto play visible video
   const observer = new IntersectionObserver((entries) => {
     entries.forEach(e => {
       const video = e.target.querySelector("video");
       if (!video) return;
-      if (e.isIntersecting) {
-        video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
+      if (e.isIntersecting) video.play().catch(()=>{});
+      else video.pause();
     });
   }, { threshold: 0.7 });
 
-  const mo = new MutationObserver(() => {
+  new MutationObserver(() => {
     document.querySelectorAll(".video-item").forEach(el => observer.observe(el));
-  });
-  mo.observe(feed, { childList: true });
+  }).observe(feed, { childList: true });
 
   loadVideos();
 </script>
@@ -230,4 +239,4 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(\`Server running on port \${PORT}\`));
